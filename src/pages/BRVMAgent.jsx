@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { getBRVMSessions, saveBRVMSession, saveBRVMPortfolio, getBRVMPortfolio } from '../utils/storage';
 import { formatFCFA } from '../utils/kelly';
 
-const SYSTEM_PROMPT = `Tu es un conseiller financier spécialisé en BRVM (Bourse Régionale des Valeurs Mobilières d'Afrique de l'Ouest). Tu aides un débutant ivoirien à investir ses gains. La devise est le FCFA. MÉTHODOLOGIE: Analyse les 45 actions cotées à la BRVM. Selon le montant disponible et les conditions actuelles du marché, décide toi-même entre stratégie croissance (buy & hold) ou dividendes ou mixte. Explique chaque recommandation simplement, sans jargon. FORMAT JSON uniquement: { strategy_chosen, strategy_reason, market_context, portfolio: [{ticker, company, sector, shares, price_per_share, total_amount, simple_explanation, why_good_for_beginner}], total_invested, cash_reserve, risk_level, beginner_tips, next_review_date }. RÈGLES: Diversifier sur au moins 3 secteurs. Garder 10% en cash. Expliquer comme si la personne n'a jamais investi. JSON valide uniquement.`;
 
 const RISK_COLORS = {
   'Faible': 'text-edge-accent',
@@ -50,11 +49,6 @@ export default function BRVMAgent() {
   const [currentPortfolio] = useState(getBRVMPortfolio());
 
   const handleAnalyze = async () => {
-    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      setError('Clé API Anthropic manquante. Ajoutez VITE_ANTHROPIC_API_KEY dans votre fichier .env');
-      return;
-    }
     const amountNum = parseInt(amount.replace(/\D/g, ''), 10);
     if (!amountNum || amountNum < 10000) {
       setError('Montant minimum: 10 000 FCFA');
@@ -65,43 +59,69 @@ export default function BRVMAgent() {
     setError('');
     setResult(null);
 
-    const userMessage = `J'ai ${amountNum} FCFA à investir à la BRVM. Je suis un débutant en Côte d'Ivoire. Propose-moi un portefeuille diversifié adapté à mon profil.`;
+    const userPrompt = `J'ai ${amountNum} FCFA à investir à la BRVM. Je suis un débutant en Côte d'Ivoire. Propose-moi un portefeuille diversifié adapté à mon profil.`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
+          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 1000,
-          system: SYSTEM_PROMPT,
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          messages: [{ role: 'user', content: userMessage }],
+          system: "Utilise ta connaissance des 45 actions cotées à la BRVM et des tendances du marché ouest-africain. Tu es un conseiller financier spécialisé en BRVM. Tu aides un débutant ivoirien à investir ses gains. Devise: FCFA. Diversifier sur au moins 3 secteurs. Garder 10% en cash. Expliquer simplement.",
+          tools: [
+            {
+              name: 'propose_portfolio',
+              description: 'Propose un portefeuille BRVM adapté débutant',
+              input_schema: {
+                type: 'object',
+                properties: {
+                  strategy_chosen: { type: 'string' },
+                  strategy_reason: { type: 'string' },
+                  market_context: { type: 'string' },
+                  portfolio: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        ticker: { type: 'string' },
+                        company: { type: 'string' },
+                        sector: { type: 'string' },
+                        shares: { type: 'number' },
+                        price_per_share: { type: 'number' },
+                        total_amount: { type: 'number' },
+                        simple_explanation: { type: 'string' },
+                        why_good_for_beginner: { type: 'string' },
+                      },
+                      required: ['ticker', 'company', 'sector', 'shares', 'price_per_share', 'total_amount', 'simple_explanation', 'why_good_for_beginner'],
+                    },
+                  },
+                  total_invested: { type: 'number' },
+                  cash_reserve: { type: 'number' },
+                  risk_level: { type: 'string' },
+                  beginner_tips: { type: 'array', items: { type: 'string' } },
+                  next_review_date: { type: 'string' },
+                },
+                required: ['strategy_chosen', 'strategy_reason', 'market_context', 'portfolio', 'total_invested', 'cash_reserve', 'risk_level', 'beginner_tips'],
+              },
+            },
+          ],
+          tool_choice: { type: 'tool', name: 'propose_portfolio' },
+          messages: [{ role: 'user', content: userPrompt }],
         }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error?.message || `Erreur API ${res.status}`);
-      }
-
       const data = await res.json();
-      const textBlock = data.content?.find((b) => b.type === 'text');
-      if (!textBlock) throw new Error('Réponse vide de l\'API');
+      console.log('RAW:', JSON.stringify(data));
 
-      let parsed;
-      try {
-        const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
-        parsed = JSON.parse(jsonMatch ? jsonMatch[0] : textBlock.text);
-      } catch {
-        throw new Error('Réponse non-JSON reçue de l\'agent');
-      }
-
+      const toolUse = data.content.find((b) => b.type === 'tool_use');
+      if (!toolUse) throw new Error('Pas de réponse structurée');
+      const parsed = toolUse.input;
       setResult(parsed);
       saveBRVMPortfolio(parsed);
       const session = {
@@ -116,7 +136,8 @@ export default function BRVMAgent() {
       saveBRVMSession(session);
       setSessions(getBRVMSessions());
     } catch (e) {
-      setError(e.message || 'Erreur inconnue');
+      console.error('ERREUR:', e);
+      setError(e.message);
     } finally {
       setLoading(false);
     }

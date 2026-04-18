@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import {
   getBettingBankroll, saveBettingBankroll,
   getBettingSessions, saveBettingSession,
@@ -10,7 +10,6 @@ import BankrollCard from '../components/BankrollCard';
 const SPORTS = ['Football', 'Basketball/NBA', 'NFL', 'Tennis'];
 const HORIZONS = ["Aujourd'hui", 'Cette semaine'];
 
-const SYSTEM_PROMPT = `Tu es EDGE — un agent de paris sportifs expert qui raisonne comme un trader quantitatif. Tu analyses les données sportives et proposes des paris avec une approche mathématique rigoureuse. SPORTS COUVERTS: Football (soccer), Basketball/NBA, NFL, Tennis. La devise est le Franc CFA (FCFA / F). MÉTHODOLOGIE: Évalue la valeur espérée (EV = probabilité_estimée × cote - 1). Ne propose un pari QUE si EV > 0.05 (5% d'edge minimum). Calcule la mise via Kelly fractionné (1/4 Kelly). Formule Kelly: f = (p × b - q) / b, mise = (f/4) × bankroll. Mix automatique simples + combinés selon les opportunités. FORMAT DE RÉPONSE OBLIGATOIRE (JSON uniquement, pas de markdown): { analysis, bets: [{id, sport, match, market, pick, odds, our_prob, ev, confidence, stake_pct, stake_amount, reasoning}], parlay: {active, legs, combined_odds, stake_amount, potential_return, reasoning}, weekly_target, risk_level, warning }. RÈGLES: Ne jamais miser plus de 5% du bankroll. Minimum 2 paris maximum 6. Si pas assez d'edge: dire PAS DE PARI AUJOURD'HUI. Répondre UNIQUEMENT en JSON valide.`;
 
 function BankrollCurve({ history }) {
   if (!history || history.length < 2) return null;
@@ -133,51 +132,84 @@ export default function BettingAgent() {
   };
 
   const handleAnalyze = async () => {
-    const apiKey = import.meta.env.VITE_ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      setError('Clé API Anthropic manquante. Ajoutez VITE_ANTHROPIC_API_KEY dans votre fichier .env');
-      return;
-    }
     setLoading(true);
     setError('');
     setCurrentSession(null);
 
-    const userMessage = `Bankroll actuelle: ${bankroll.current} FCFA. Sports sélectionnés: ${selectedSports.join(', ')}. Horizon: ${horizon}. ${context ? `Contexte: ${context}` : ''} Propose les meilleurs paris avec ton analyse et calcul Kelly fractionné.`;
+    const userPrompt = `Bankroll actuelle: ${bankroll.current} FCFA. Sports sélectionnés: ${selectedSports.join(', ')}. Horizon: ${horizon}. ${context ? `Contexte: ${context}` : ''} Propose les meilleurs paris avec ton analyse et calcul Kelly fractionné.`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': apiKey,
+          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-sonnet-4-6',
           max_tokens: 1000,
-          system: SYSTEM_PROMPT,
-          tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-          messages: [{ role: 'user', content: userMessage }],
+          system: "Tu es EDGE, un agent de paris sportifs expert. Tu analyses les matchs et proposes des paris avec gestion Kelly. Devise: FCFA. Sports: Football, Basketball/NBA, NFL, Tennis. Ne propose un pari que si EV > 5%. Mise max 5% bankroll. Kelly fractionné 1/4.",
+          tools: [
+            {
+              name: 'propose_bets',
+              description: 'Propose des paris sportifs avec gestion de bankroll Kelly',
+              input_schema: {
+                type: 'object',
+                properties: {
+                  analysis: { type: 'string', description: 'Analyse du contexte en 2-3 phrases' },
+                  bets: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      properties: {
+                        sport: { type: 'string', enum: ['football', 'basketball', 'nfl', 'tennis'] },
+                        match: { type: 'string' },
+                        market: { type: 'string' },
+                        pick: { type: 'string' },
+                        odds: { type: 'number' },
+                        our_prob: { type: 'number' },
+                        ev: { type: 'number' },
+                        confidence: { type: 'number' },
+                        stake_pct: { type: 'number' },
+                        stake_amount: { type: 'number' },
+                        reasoning: { type: 'string' },
+                      },
+                      required: ['sport', 'match', 'market', 'pick', 'odds', 'our_prob', 'ev', 'confidence', 'stake_pct', 'stake_amount', 'reasoning'],
+                    },
+                  },
+                  parlay: {
+                    type: 'object',
+                    properties: {
+                      active: { type: 'boolean' },
+                      combined_odds: { type: 'number' },
+                      stake_amount: { type: 'number' },
+                      potential_return: { type: 'number' },
+                      reasoning: { type: 'string' },
+                    },
+                    required: ['active', 'combined_odds', 'stake_amount', 'potential_return', 'reasoning'],
+                  },
+                  weekly_target: { type: 'string' },
+                  risk_level: { type: 'string' },
+                  warning: { type: 'string' },
+                },
+                required: ['analysis', 'bets', 'parlay', 'weekly_target', 'risk_level'],
+              },
+            },
+          ],
+          tool_choice: { type: 'tool', name: 'propose_bets' },
+          messages: [{ role: 'user', content: userPrompt }],
         }),
       });
 
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error?.message || `Erreur API ${res.status}`);
-      }
-
       const data = await res.json();
-      const textBlock = data.content?.find((b) => b.type === 'text');
-      if (!textBlock) throw new Error('Réponse vide de l\'API');
+      console.log('STATUS:', res.status);
+      console.log('RAW DATA:', JSON.stringify(data, null, 2));
 
-      let parsed;
-      try {
-        const jsonMatch = textBlock.text.match(/\{[\s\S]*\}/);
-        parsed = JSON.parse(jsonMatch ? jsonMatch[0] : textBlock.text);
-      } catch {
-        throw new Error('Réponse non-JSON reçue de l\'agent');
-      }
+      const toolUse = data.content.find((b) => b.type === 'tool_use');
+      if (!toolUse) throw new Error('Pas de réponse structurée');
+      const parsed = toolUse.input;
 
       const session = {
         id: Date.now().toString(),
@@ -197,7 +229,8 @@ export default function BettingAgent() {
       saveBettingSession(session);
       setSessions(getBettingSessions());
     } catch (e) {
-      setError(e.message || 'Erreur inconnue');
+      console.error('ERREUR COMPLETE:', e.message);
+      setError(e.message);
     } finally {
       setLoading(false);
     }
