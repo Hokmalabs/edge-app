@@ -50,22 +50,12 @@ export default function BRVMAgent() {
     const userPrompt = `Montant à investir: ${amountNum} FCFA. Utilise ta connaissance des actions BRVM cotées (SIB, SONATEL, ORANGE CI, ECOBANK, SGCI, UNIWAX, NESTLE CI, SOLIBRA, SAFCA, PALM CI) avec des prix approximatifs réalistes et propose un portefeuille de 3 à 5 actions.`;
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        signal: controller.signal,
+      const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
-          system: "Tu es un conseiller BRVM expert. Devise: FCFA. Recommande un portefeuille débutant diversifié sur au moins 3 secteurs. Garde 10% en cash. Réponds UNIQUEMENT via l'outil propose_portfolio.",
+          systemPrompt: "Tu es un conseiller BRVM expert. Utilise web_search pour trouver les cours RÉELS actuels des actions BRVM aujourd'hui. Ne donne que des prix réels vérifiés. Devise: FCFA. Explique simplement pour débutant. Diversifie sur au moins 3 secteurs. Garde 10% en cash.",
+          userPrompt,
           tools: [
             {
               name: 'propose_portfolio',
@@ -103,19 +93,16 @@ export default function BRVMAgent() {
               },
             },
           ],
-          tool_choice: { type: 'tool', name: 'propose_portfolio' },
-          messages: [{ role: 'user', content: userPrompt }],
+          toolName: 'propose_portfolio',
         }),
       });
 
-      const data = await res.json();
-      clearTimeout(timeoutId);
-      console.log('RAW:', JSON.stringify(data));
+      const parsed = await res.json();
+      if (!res.ok) throw new Error(parsed.error || 'Erreur serveur');
+      console.log('PARSED:', JSON.stringify(parsed));
 
-      const toolUse = data.content.find((b) => b.type === 'tool_use');
-      if (!toolUse) throw new Error('Pas de réponse structurée');
-      const parsed = toolUse.input;
       setResult(parsed);
+      setStockConfirmations({});
       saveBRVMPortfolio(parsed);
       const session = {
         id: Date.now().toString(),
@@ -129,13 +116,8 @@ export default function BRVMAgent() {
       saveBRVMSession(session);
       setSessions(getBRVMSessions());
     } catch (e) {
-      clearTimeout(timeoutId);
       console.error('ERREUR:', e.message);
-      if (e.name === 'AbortError') {
-        setError("Délai dépassé - Réessaie sans web search ou avec moins de sports sélectionnés");
-      } else {
-        setError(e.message);
-      }
+      setError(e.message);
     } finally {
       setLoading(false);
     }

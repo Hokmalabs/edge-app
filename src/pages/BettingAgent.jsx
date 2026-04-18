@@ -139,29 +139,19 @@ export default function BettingAgent() {
     setError('');
     setCurrentSession(null);
 
-    const userPrompt = `Bankroll: ${bankroll.current} FCFA. Sports: ${selectedSports.join(', ')}. Horizon: ${horizon}.${context ? ` ${context}` : ''} Nous sommes le ${new Date().toLocaleDateString('fr-FR')}. Utilise ta connaissance des championnats en cours pour proposer des matchs probables avec des cotes réalistes.`;
+    const userPrompt = `Bankroll: ${bankroll.current} FCFA. Sports: ${selectedSports.join(', ')}. Horizon: ${horizon}.${context ? ` ${context}` : ''} Nous sommes le ${new Date().toLocaleDateString('fr-FR')}. Utilise web_search pour trouver les vrais matchs du jour avec leurs vraies cotes.`;
 
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        signal: controller.signal,
+      const res = await fetch('/api/analyze', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2000,
-          system: "Tu es EDGE, agent de paris sportifs. Devise: FCFA. Ne parie que si EV > 5%. Kelly 1/4. Mise max 5% bankroll. Réponds UNIQUEMENT via l'outil propose_bets.",
+          systemPrompt: "Tu es EDGE, agent de paris sportifs expert. Devise: FCFA. Utilise web_search pour trouver les VRAIS matchs du jour avec leurs vraies cotes. Ne propose QUE des matchs réels vérifiés. Kelly 1/4. Mise max 5% bankroll. EV > 5% requis. Inclus l'heure de début de chaque match.",
+          userPrompt,
           tools: [
             {
               name: 'propose_bets',
-              description: 'Propose des paris sportifs avec Kelly',
+              description: 'Propose des paris sur des matchs réels du jour',
               input_schema: {
                 type: 'object',
                 properties: {
@@ -173,6 +163,7 @@ export default function BettingAgent() {
                       properties: {
                         sport: { type: 'string' },
                         match: { type: 'string' },
+                        match_time: { type: 'string' },
                         market: { type: 'string' },
                         pick: { type: 'string' },
                         odds: { type: 'number' },
@@ -182,9 +173,8 @@ export default function BettingAgent() {
                         stake_pct: { type: 'number' },
                         stake_amount: { type: 'number' },
                         reasoning: { type: 'string' },
-                        match_time: { type: 'string' },
                       },
-                      required: ['sport', 'match', 'market', 'pick', 'odds', 'our_prob', 'ev', 'confidence', 'stake_pct', 'stake_amount', 'reasoning', 'match_time'],
+                      required: ['sport', 'match', 'match_time', 'market', 'pick', 'odds', 'our_prob', 'ev', 'confidence', 'stake_pct', 'stake_amount', 'reasoning'],
                     },
                   },
                   parlay: {
@@ -206,19 +196,13 @@ export default function BettingAgent() {
               },
             },
           ],
-          tool_choice: { type: 'tool', name: 'propose_bets' },
-          messages: [{ role: 'user', content: userPrompt }],
+          toolName: 'propose_bets',
         }),
       });
 
-      const data = await res.json();
-      clearTimeout(timeoutId);
-      console.log('STATUS:', res.status);
-      console.log('RAW DATA:', JSON.stringify(data, null, 2));
-
-      const toolUse = data.content.find((b) => b.type === 'tool_use');
-      if (!toolUse) throw new Error('Pas de réponse structurée');
-      const parsed = toolUse.input;
+      const parsed = await res.json();
+      if (!res.ok) throw new Error(parsed.error || 'Erreur serveur');
+      console.log('PARSED:', JSON.stringify(parsed));
 
       const session = {
         id: Date.now().toString(),
@@ -238,13 +222,8 @@ export default function BettingAgent() {
       saveBettingSession(session);
       setSessions(getBettingSessions());
     } catch (e) {
-      clearTimeout(timeoutId);
-      console.error('ERREUR COMPLETE:', e.message);
-      if (e.name === 'AbortError') {
-        setError("Délai dépassé - Réessaie sans web search ou avec moins de sports sélectionnés");
-      } else {
-        setError(e.message);
-      }
+      console.error('ERREUR:', e.message);
+      setError(e.message);
     } finally {
       setLoading(false);
     }
