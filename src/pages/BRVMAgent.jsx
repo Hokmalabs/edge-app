@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { getBRVMSessions, saveBRVMSession, saveBRVMPortfolio, getBRVMPortfolio } from '../utils/storage';
+import { getBRVMSessions, saveBRVMSession, saveBRVMPortfolio, getBRVMPortfolio, getBettingBankroll, saveBettingBankroll, appendBankrollPoint, addBRVMConfirmedAmount } from '../utils/storage';
 import { formatFCFA } from '../utils/kelly';
 
 
@@ -12,32 +12,6 @@ const RISK_COLORS = {
   'élevé': 'text-edge-danger',
 };
 
-function StockCard({ stock }) {
-  return (
-    <div className="rounded-lg border border-edge-border bg-edge-surface p-4 space-y-2">
-      <div className="flex justify-between items-start">
-        <div>
-          <span className="text-edge-accent font-bold text-sm">{stock.ticker}</span>
-          <p className="text-xs text-edge-muted">{stock.sector}</p>
-        </div>
-        <div className="text-right">
-          <p className="text-sm font-bold text-edge-text">{formatFCFA(stock.total_amount)}</p>
-          <p className="text-xs text-edge-muted">{stock.shares} actions</p>
-        </div>
-      </div>
-      <p className="text-xs text-edge-text font-medium">{stock.company}</p>
-      <p className="text-xs text-edge-muted">Prix unitaire: <span className="text-edge-text">{formatFCFA(stock.price_per_share)}</span></p>
-      {stock.simple_explanation && (
-        <div className="border-t border-edge-border pt-2">
-          <p className="text-xs text-edge-text leading-relaxed">{stock.simple_explanation}</p>
-        </div>
-      )}
-      {stock.why_good_for_beginner && (
-        <p className="text-xs text-edge-accent leading-relaxed">💡 {stock.why_good_for_beginner}</p>
-      )}
-    </div>
-  );
-}
 
 export default function BRVMAgent() {
   const [amount, setAmount] = useState('');
@@ -47,6 +21,20 @@ export default function BRVMAgent() {
   const [sessions, setSessions] = useState(getBRVMSessions());
   const [showHistory, setShowHistory] = useState(false);
   const [currentPortfolio] = useState(getBRVMPortfolio());
+  const [stockConfirmations, setStockConfirmations] = useState({});
+
+  const confirmStock = (ticker, amount) => {
+    setStockConfirmations((prev) => ({ ...prev, [ticker]: 'bought' }));
+    const br = getBettingBankroll();
+    const updated = { ...br, current: Math.max(0, br.current - amount) };
+    saveBettingBankroll(updated);
+    appendBankrollPoint(updated.current);
+    addBRVMConfirmedAmount(amount);
+  };
+
+  const skipStock = (ticker) => {
+    setStockConfirmations((prev) => ({ ...prev, [ticker]: 'skipped' }));
+  };
 
   const handleAnalyze = async () => {
     const amountNum = parseInt(amount.replace(/\D/g, ''), 10);
@@ -254,13 +242,51 @@ export default function BRVMAgent() {
               </div>
             </div>
 
-            {/* Portefeuille */}
+            {/* Portefeuille avec confirmation d'achat */}
             <p className="text-xs text-edge-muted uppercase tracking-widest">
-              Portefeuille ({result.portfolio?.length || 0} actions)
+              Portefeuille ({result.portfolio?.length || 0} actions) — Confirme tes achats
             </p>
-            {result.portfolio?.map((stock) => (
-              <StockCard key={stock.ticker} stock={stock} />
-            ))}
+            {result.portfolio?.map((stock) => {
+              const status = stockConfirmations[stock.ticker];
+              return (
+                <div key={stock.ticker} className={`rounded-lg border p-4 space-y-2 ${
+                  status === 'bought' ? 'border-edge-accent/50 bg-edge-accent/5'
+                  : status === 'skipped' ? 'border-edge-border/40 opacity-50'
+                  : 'border-edge-border bg-edge-surface'
+                }`}>
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <span className="text-edge-accent font-bold text-sm">{stock.ticker}</span>
+                      <p className="text-xs text-edge-muted">{stock.sector}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-edge-text">{formatFCFA(stock.total_amount)}</p>
+                      <p className="text-xs text-edge-muted">{stock.shares} actions · {formatFCFA(stock.price_per_share)}/action</p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-edge-text font-medium">{stock.company}</p>
+                  {stock.simple_explanation && (
+                    <p className="text-xs text-edge-muted leading-relaxed border-t border-edge-border pt-2">{stock.simple_explanation}</p>
+                  )}
+                  {status ? (
+                    <p className={`text-xs font-bold pt-1 ${status === 'bought' ? 'text-edge-accent' : 'text-edge-muted'}`}>
+                      {status === 'bought' ? '✅ Acheté — bankroll mise à jour' : '⏭ Non acheté'}
+                    </p>
+                  ) : (
+                    <div className="flex gap-2 pt-1">
+                      <button
+                        onClick={() => confirmStock(stock.ticker, stock.total_amount)}
+                        className="flex-1 text-xs py-2 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors"
+                      >✅ J'AI ACHETÉ</button>
+                      <button
+                        onClick={() => skipStock(stock.ticker)}
+                        className="flex-1 text-xs py-2 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors"
+                      >⏭ PAS ACHETÉ</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
 
             {/* Conseils débutant */}
             {result.beginner_tips && (

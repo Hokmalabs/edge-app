@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
-import { getBettingBankroll, getBettingSessions, getBRVMPortfolio } from '../utils/storage';
-import { formatFCFA, calcROI } from '../utils/kelly';
+import { getBettingBankroll, getBettingSessions, getBRVMPortfolio, getBRVMConfirmedAmount } from '../utils/storage';
+import { formatFCFA } from '../utils/kelly';
 import BankrollCard from '../components/BankrollCard';
 
 export default function Dashboard() {
@@ -8,12 +8,10 @@ export default function Dashboard() {
   const bankroll = getBettingBankroll();
   const sessions = getBettingSessions();
   const brvmPortfolio = getBRVMPortfolio();
+  const brvmConfirmed = getBRVMConfirmedAmount();
 
   const lastBetting = sessions[0] || null;
-  const totalPatrimoine = bankroll.current + (brvmPortfolio?.total_invested || 0);
-  const brvmROI = brvmPortfolio
-    ? calcROI(brvmPortfolio.total_invested, brvmPortfolio.total_invested)
-    : 0;
+  const totalPatrimoine = bankroll.current + brvmConfirmed;
 
   return (
     <div className="min-h-screen bg-edge-bg text-edge-text font-mono pb-24">
@@ -44,8 +42,8 @@ export default function Dashboard() {
           />
           <BankrollCard
             label="Portefeuille BRVM"
-            current={brvmPortfolio?.total_invested || 0}
-            subtitle={brvmPortfolio ? `${brvmPortfolio.portfolio?.length || 0} actions` : 'Aucun investissement'}
+            current={brvmConfirmed}
+            subtitle={brvmConfirmed > 0 ? 'Achats confirmés' : 'Aucun achat confirmé'}
           />
         </div>
 

@@ -4,6 +4,7 @@ const KEYS = {
   BETTING_BANKROLL_HISTORY: 'edge_bankroll_history',
   BRVM_PORTFOLIO: 'edge_brvm_portfolio',
   BRVM_SESSIONS: 'edge_brvm_sessions',
+  BRVM_CONFIRMED_AMOUNT: 'edge_brvm_confirmed',
   SETTINGS: 'edge_settings',
 };
 
@@ -69,6 +70,15 @@ export function getBRVMPortfolio() {
 
 export function saveBRVMPortfolio(portfolio) {
   save(KEYS.BRVM_PORTFOLIO, { ...portfolio, savedAt: new Date().toISOString() });
+}
+
+// --- Montant BRVM réellement confirmé (achats validés par l'utilisateur) ---
+export function getBRVMConfirmedAmount() {
+  return load(KEYS.BRVM_CONFIRMED_AMOUNT, 0);
+}
+
+export function addBRVMConfirmedAmount(amount) {
+  save(KEYS.BRVM_CONFIRMED_AMOUNT, getBRVMConfirmedAmount() + amount);
 }
 
 // --- Sessions BRVM ---

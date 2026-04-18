@@ -50,15 +50,21 @@ function BankrollCurve({ history }) {
   );
 }
 
-function BetCard({ bet, onResult }) {
+function BetCard({ bet, sessionId, onResult }) {
   const evColor = bet.ev > 0.1 ? 'text-edge-accent' : bet.ev > 0.05 ? 'text-edge-warning' : 'text-edge-muted';
   const confidenceBar = Math.round((bet.confidence || 0.5) * 100);
+  const resultDisplay = {
+    won: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-accent/20 text-edge-accent">✓ GAGNÉ</span>,
+    lost: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-danger/20 text-edge-danger">✗ PERDU</span>,
+    skipped: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-border text-edge-muted">⏭ NON JOUÉ</span>,
+  };
   return (
     <div className="rounded-lg border border-edge-border bg-edge-surface p-4 space-y-2">
       <div className="flex justify-between items-start">
         <div>
           <span className="text-xs px-2 py-0.5 rounded bg-edge-border text-edge-muted mr-2">{bet.sport}</span>
           <span className="text-xs text-edge-muted">{bet.market}</span>
+          {bet.match_time && <span className="text-xs text-edge-warning ml-2">{bet.match_time}</span>}
         </div>
         <span className={`text-sm font-bold ${evColor}`}>EV {(bet.ev * 100).toFixed(1)}%</span>
       </div>
@@ -81,14 +87,11 @@ function BetCard({ bet, onResult }) {
           <p className="text-xs text-edge-muted">Mise Kelly</p>
           <p className="text-edge-accent font-bold">{formatFCFA(bet.stake_amount)} <span className="text-xs text-edge-muted">({bet.stake_pct}%)</span></p>
         </div>
-        {bet.result ? (
-          <span className={`text-sm font-bold px-3 py-1 rounded ${bet.result === 'won' ? 'bg-edge-accent/20 text-edge-accent' : 'bg-edge-danger/20 text-edge-danger'}`}>
-            {bet.result === 'won' ? '✓ GAGNÉ' : '✗ PERDU'}
-          </span>
-        ) : (
-          <div className="flex gap-2">
-            <button onClick={() => onResult(bet.id, 'won')} className="text-xs px-3 py-1.5 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors">GAGNÉ</button>
-            <button onClick={() => onResult(bet.id, 'lost')} className="text-xs px-3 py-1.5 rounded border border-edge-danger text-edge-danger hover:bg-edge-danger/10 transition-colors">PERDU</button>
+        {bet.result ? resultDisplay[bet.result] : (
+          <div className="flex gap-1.5">
+            <button onClick={() => onResult(sessionId, bet.id, 'won')} className="text-xs px-2 py-1.5 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors">✅ GAGNÉ</button>
+            <button onClick={() => onResult(sessionId, bet.id, 'lost')} className="text-xs px-2 py-1.5 rounded border border-edge-danger text-edge-danger hover:bg-edge-danger/10 transition-colors">❌ PERDU</button>
+            <button onClick={() => onResult(sessionId, bet.id, 'skipped')} className="text-xs px-2 py-1.5 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">⏭</button>
           </div>
         )}
       </div>
@@ -247,27 +250,49 @@ export default function BettingAgent() {
     }
   };
 
-  const handleResult = (betId, result) => {
-    if (!currentSession) return;
-    const updatedBets = currentSession.bets.map((b) =>
-      b.id === betId ? { ...b, result } : b
-    );
-    const updatedSession = { ...currentSession, bets: updatedBets };
-    setCurrentSession(updatedSession);
+  const applyBankrollChange = (pnl) => {
+    const latest = getBettingBankroll();
+    const updated = { ...latest, current: Math.max(0, latest.current + pnl) };
+    saveBettingBankroll(updated);
+    setBankroll(updated);
+    appendBankrollPoint(updated.current);
+    setBankrollHistory(getBankrollHistory());
+  };
+
+  const handleResult = (sessionId, betId, result) => {
+    const allSessions = getBettingSessions();
+    const target = allSessions.find((s) => s.id === sessionId);
+    if (!target) return;
+    const updatedBets = target.bets.map((b) => b.id === betId ? { ...b, result } : b);
+    const updatedSession = { ...target, bets: updatedBets };
     saveBettingSession(updatedSession);
     setSessions(getBettingSessions());
+    if (currentSession?.id === sessionId) setCurrentSession(updatedSession);
 
-    const bet = updatedBets.find((b) => b.id === betId);
-    if (bet) {
+    if (result !== 'skipped') {
+      const bet = updatedBets.find((b) => b.id === betId);
+      if (bet) {
+        const pnl = result === 'won' ? bet.stake_amount * (bet.odds - 1) : -bet.stake_amount;
+        applyBankrollChange(pnl);
+      }
+    }
+  };
+
+  const handleParlayResult = (sessionId, result) => {
+    const allSessions = getBettingSessions();
+    const target = allSessions.find((s) => s.id === sessionId);
+    if (!target?.parlay) return;
+    const updatedSession = { ...target, parlay: { ...target.parlay, result } };
+    saveBettingSession(updatedSession);
+    setSessions(getBettingSessions());
+    if (currentSession?.id === sessionId) setCurrentSession(updatedSession);
+
+    if (result !== 'skipped') {
+      const { parlay } = target;
       const pnl = result === 'won'
-        ? bet.stake_amount * (bet.odds - 1)
-        : -bet.stake_amount;
-      const newCurrent = bankroll.current + pnl;
-      const updated = { ...bankroll, current: Math.max(0, newCurrent) };
-      saveBettingBankroll(updated);
-      setBankroll(updated);
-      appendBankrollPoint(updated.current);
-      setBankrollHistory(getBankrollHistory());
+        ? parlay.stake_amount * (parlay.combined_odds - 1)
+        : -parlay.stake_amount;
+      applyBankrollChange(pnl);
     }
   };
 
@@ -374,10 +399,48 @@ export default function BettingAgent() {
           </div>
         )}
 
+        {/* MES PARIS EN COURS — toutes sessions confondues */}
+        {(() => {
+          const pendingBets = sessions.flatMap((s) =>
+            (s.bets || []).filter((b) => b.result === null).map((b) => ({ ...b, sessionId: s.id }))
+          );
+          const pendingParlays = sessions.filter(
+            (s) => s.parlay?.active && !s.parlay?.result
+          );
+          if (pendingBets.length === 0 && pendingParlays.length === 0) return null;
+          return (
+            <div className="space-y-3">
+              <p className="text-xs text-edge-muted uppercase tracking-widest">
+                Mes Paris en cours ({pendingBets.length})
+              </p>
+              {pendingBets.map((bet) => (
+                <BetCard key={bet.id} bet={bet} sessionId={bet.sessionId} onResult={handleResult} />
+              ))}
+              {pendingParlays.map((s) => (
+                <div key={s.id} className="rounded-lg border border-edge-warning/30 bg-edge-warning/5 p-4">
+                  <p className="text-xs text-edge-warning uppercase tracking-widest mb-2">Combiné en cours</p>
+                  <div className="flex justify-between text-sm mb-1">
+                    <span className="text-edge-muted">Cote combinée</span>
+                    <span className="text-edge-text font-bold">@{s.parlay.combined_odds}</span>
+                  </div>
+                  <div className="flex justify-between text-sm mb-3">
+                    <span className="text-edge-muted">Mise · Gain potentiel</span>
+                    <span className="text-edge-accent">{formatFCFA(s.parlay.stake_amount)} · {formatFCFA(s.parlay.potential_return)}</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => handleParlayResult(s.id, 'won')} className="flex-1 text-xs py-2 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors">✅ GAGNÉ</button>
+                    <button onClick={() => handleParlayResult(s.id, 'lost')} className="flex-1 text-xs py-2 rounded border border-edge-danger text-edge-danger hover:bg-edge-danger/10 transition-colors">❌ PERDU</button>
+                    <button onClick={() => handleParlayResult(s.id, 'skipped')} className="text-xs px-3 py-2 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">⏭</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        })()}
+
         {/* Résultats session courante */}
         {currentSession && (
           <div className="space-y-4">
-            {/* Analyse */}
             {currentSession.analysis && (
               <div className="rounded-lg border border-edge-border bg-edge-surface p-4">
                 <p className="text-xs text-edge-muted uppercase tracking-widest mb-2">Analyse</p>
@@ -389,34 +452,6 @@ export default function BettingAgent() {
                   <span>Risque: <span className="text-edge-text">{currentSession.risk_level}</span></span>
                   <span>Objectif: <span className="text-edge-accent">{currentSession.weekly_target}</span></span>
                 </div>
-              </div>
-            )}
-
-            {/* Paris */}
-            <p className="text-xs text-edge-muted uppercase tracking-widest">Paris Recommandés ({currentSession.bets?.length || 0})</p>
-            {currentSession.bets?.map((bet) => (
-              <BetCard key={bet.id} bet={bet} onResult={handleResult} />
-            ))}
-
-            {/* Combiné */}
-            {currentSession.parlay?.active && (
-              <div className="rounded-lg border border-edge-warning/30 bg-edge-warning/5 p-4">
-                <p className="text-xs text-edge-warning uppercase tracking-widest mb-2">Combiné Recommandé</p>
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-edge-muted">Cote combinée</span>
-                  <span className="text-edge-text font-bold">@{currentSession.parlay.combined_odds}</span>
-                </div>
-                <div className="flex justify-between text-sm mb-2">
-                  <span className="text-edge-muted">Mise</span>
-                  <span className="text-edge-accent font-bold">{formatFCFA(currentSession.parlay.stake_amount)}</span>
-                </div>
-                <div className="flex justify-between text-sm mb-3">
-                  <span className="text-edge-muted">Gain potentiel</span>
-                  <span className="text-edge-accent font-bold">{formatFCFA(currentSession.parlay.potential_return)}</span>
-                </div>
-                {currentSession.parlay.reasoning && (
-                  <p className="text-xs text-edge-muted leading-relaxed">{currentSession.parlay.reasoning}</p>
-                )}
               </div>
             )}
           </div>
