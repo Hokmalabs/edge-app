@@ -59,7 +59,7 @@ export default function BRVMAgent() {
     setError('');
     setResult(null);
 
-    const userPrompt = `J'ai ${amountNum} FCFA à investir à la BRVM. Je suis un débutant en Côte d'Ivoire. Propose-moi un portefeuille diversifié adapté à mon profil.`;
+    const userPrompt = `Montant à investir: ${amountNum} FCFA. Recherche les cours actuels des actions BRVM (SIB, SONATEL, ORANGE CI, ECOBANK, SGCI, UNIWAX, NESTLE CI, SOLIBRA...) et propose un portefeuille de 3 à 5 actions avec les prix réels du marché.`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -72,12 +72,16 @@ export default function BRVMAgent() {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          system: "Utilise ta connaissance des 45 actions cotées à la BRVM et des tendances du marché ouest-africain. Tu es un conseiller financier spécialisé en BRVM. Tu aides un débutant ivoirien à investir ses gains. Devise: FCFA. Diversifier sur au moins 3 secteurs. Garder 10% en cash. Expliquer simplement.",
+          max_tokens: 2000,
+          system: "Tu es un conseiller BRVM expert. Devise: FCFA. Recherche les cours actuels des actions BRVM avec web search. Recommande un portefeuille débutant diversifié. Réponds UNIQUEMENT via l'outil propose_portfolio.",
           tools: [
             {
+              type: 'web_search_20250305',
+              name: 'web_search',
+            },
+            {
               name: 'propose_portfolio',
-              description: 'Propose un portefeuille BRVM adapté débutant',
+              description: 'Propose un portefeuille BRVM débutant',
               input_schema: {
                 type: 'object',
                 properties: {

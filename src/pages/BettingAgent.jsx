@@ -136,7 +136,7 @@ export default function BettingAgent() {
     setError('');
     setCurrentSession(null);
 
-    const userPrompt = `Bankroll actuelle: ${bankroll.current} FCFA. Sports sélectionnés: ${selectedSports.join(', ')}. Horizon: ${horizon}. ${context ? `Contexte: ${context}` : ''} Propose les meilleurs paris avec ton analyse et calcul Kelly fractionné.`;
+    const userPrompt = `Bankroll: ${bankroll.current} FCFA. Sports: ${selectedSports.join(', ')}. Horizon: ${horizon}.${context ? ` ${context}` : ''} Recherche les vrais matchs du jour avec leurs cotes réelles et propose les meilleurs paris avec heure de début.`;
 
     try {
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -149,22 +149,26 @@ export default function BettingAgent() {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-6',
-          max_tokens: 1000,
-          system: "Tu es EDGE, un agent de paris sportifs expert. Tu analyses les matchs et proposes des paris avec gestion Kelly. Devise: FCFA. Sports: Football, Basketball/NBA, NFL, Tennis. Ne propose un pari que si EV > 5%. Mise max 5% bankroll. Kelly fractionné 1/4.",
+          max_tokens: 2000,
+          system: "Tu es EDGE, agent de paris sportifs. Devise: FCFA. Recherche les matchs du jour avec web search. Ne parie que si EV > 5%. Kelly 1/4. Mise max 5% bankroll. Réponds UNIQUEMENT via l'outil propose_bets.",
           tools: [
             {
+              type: 'web_search_20250305',
+              name: 'web_search',
+            },
+            {
               name: 'propose_bets',
-              description: 'Propose des paris sportifs avec gestion de bankroll Kelly',
+              description: 'Propose des paris sportifs avec Kelly',
               input_schema: {
                 type: 'object',
                 properties: {
-                  analysis: { type: 'string', description: 'Analyse du contexte en 2-3 phrases' },
+                  analysis: { type: 'string' },
                   bets: {
                     type: 'array',
                     items: {
                       type: 'object',
                       properties: {
-                        sport: { type: 'string', enum: ['football', 'basketball', 'nfl', 'tennis'] },
+                        sport: { type: 'string' },
                         match: { type: 'string' },
                         market: { type: 'string' },
                         pick: { type: 'string' },
@@ -175,8 +179,9 @@ export default function BettingAgent() {
                         stake_pct: { type: 'number' },
                         stake_amount: { type: 'number' },
                         reasoning: { type: 'string' },
+                        match_time: { type: 'string' },
                       },
-                      required: ['sport', 'match', 'market', 'pick', 'odds', 'our_prob', 'ev', 'confidence', 'stake_pct', 'stake_amount', 'reasoning'],
+                      required: ['sport', 'match', 'market', 'pick', 'odds', 'our_prob', 'ev', 'confidence', 'stake_pct', 'stake_amount', 'reasoning', 'match_time'],
                     },
                   },
                   parlay: {
