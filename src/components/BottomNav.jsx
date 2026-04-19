@@ -24,6 +24,16 @@ const NAV_ITEMS = [
     ),
   },
   {
+    to: '/mybets',
+    label: 'Mes Paris',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-5 h-5">
+        <rect x="4" y="3" width="16" height="18" rx="2" />
+        <path d="M8 7h8M8 11h8M8 15h5" />
+      </svg>
+    ),
+  },
+  {
     to: '/brvm',
     label: 'BRVM',
     icon: (

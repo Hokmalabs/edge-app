@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { getBettingBankroll, getBettingSessions, getBRVMPortfolio, getBRVMConfirmedAmount } from '../utils/storage';
+import { getBettingBankroll, getBettingSessions, getBRVMPortfolio, getBRVMConfirmedAmount, getPendingBets } from '../utils/storage';
 import { formatFCFA } from '../utils/kelly';
 import BankrollCard from '../components/BankrollCard';
 
@@ -12,6 +12,10 @@ export default function Dashboard() {
 
   const lastBetting = sessions[0] || null;
   const totalPatrimoine = bankroll.current + brvmConfirmed;
+  const pendingBets = getPendingBets();
+  const drawdown = bankroll.initial > 0 ? (bankroll.initial - bankroll.current) / bankroll.initial : 0;
+  const isStopLoss = drawdown >= 0.3;
+  const isWarning = drawdown >= 0.15 && !isStopLoss;
 
   return (
     <div className="min-h-screen bg-edge-bg text-edge-text font-mono pb-24">
@@ -25,6 +29,37 @@ export default function Dashboard() {
       </div>
 
       <div className="px-4 py-6 space-y-6">
+        {/* Drawdown alerts */}
+        {isStopLoss && (
+          <div className="rounded-lg border border-edge-danger bg-edge-danger/10 p-4">
+            <p className="text-sm font-bold text-edge-danger">🛑 STOP-LOSS ACTIVÉ</p>
+            <p className="text-xs text-edge-muted mt-1">Drawdown {Math.round(drawdown * 100)}% — règle 30% atteinte. Pause obligatoire.</p>
+          </div>
+        )}
+        {isWarning && (
+          <div className="rounded-lg border border-edge-warning/50 bg-edge-warning/5 p-4">
+            <p className="text-sm font-bold text-edge-warning">⚠ ALERTE DRAWDOWN {Math.round(drawdown * 100)}%</p>
+            <p className="text-xs text-edge-muted mt-1">Seuil 15% atteint — réduis les mises.</p>
+          </div>
+        )}
+
+        {/* Paris en attente */}
+        {pendingBets.length > 0 && (
+          <button
+            onClick={() => navigate('/mybets')}
+            className="w-full rounded-lg border border-edge-warning/40 bg-edge-warning/5 p-4 text-left"
+          >
+            <div className="flex justify-between items-center">
+              <p className="text-xs text-edge-warning uppercase tracking-widest">Paris en attente</p>
+              <span className="text-xs text-edge-warning font-bold">{pendingBets.length} →</span>
+            </div>
+            <div className="flex gap-4 mt-2 text-xs text-edge-muted">
+              <span>Mise: <span className="text-edge-text">{formatFCFA(pendingBets.reduce((s, b) => s + (b.stake_amount || 0), 0))}</span></span>
+              <span>Gain potentiel: <span className="text-edge-accent">{formatFCFA(pendingBets.reduce((s, b) => s + (b.type === 'parlay' ? (b.potential_return || 0) : b.stake_amount * (b.odds - 1)), 0))}</span></span>
+            </div>
+          </button>
+        )}
+
         {/* Patrimoine total */}
         <div className="rounded-lg border border-edge-accent/40 bg-gradient-to-br from-edge-accent/10 to-transparent p-5">
           <p className="text-xs text-edge-muted uppercase tracking-widest mb-1">Patrimoine Total</p>

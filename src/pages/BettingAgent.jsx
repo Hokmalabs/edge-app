@@ -3,11 +3,15 @@ import {
   getBettingBankroll, saveBettingBankroll,
   getBettingSessions, saveBettingSession,
   getBankrollHistory, appendBankrollPoint,
+  canAnalyzeToday, setLastAnalysisDate,
+  markBetAsPlayed, markBetAsNotPlayed,
+  markParlayAsPlayed, markParlayAsNotPlayed,
 } from '../utils/storage';
 import { formatFCFA } from '../utils/kelly';
 import BankrollCard from '../components/BankrollCard';
 
 const SPORTS = ['Football', 'Basketball/NBA', 'NFL', 'Tennis'];
+const HORIZONS = ["Aujourd'hui", 'Cette semaine'];
 
 const BETTING_STEPS = [
   '🔍 Recherche des matchs du jour...',
@@ -16,8 +20,17 @@ const BETTING_STEPS = [
   '⚡ Sélection des meilleurs paris...',
   '✅ Finalisation...',
 ];
-const HORIZONS = ["Aujourd'hui", 'Cette semaine'];
 
+function getCountdownToMidnight() {
+  const now = new Date();
+  const midnight = new Date(now);
+  midnight.setHours(24, 0, 0, 0);
+  const diff = Math.floor((midnight - now) / 1000);
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
 function BankrollCurve({ history }) {
   if (!history || history.length < 2) return null;
@@ -43,12 +56,7 @@ function BankrollCurve({ history }) {
             <stop offset="100%" stopColor={isUp ? '#00ff87' : '#ff4d6d'} stopOpacity="0" />
           </linearGradient>
         </defs>
-        <polyline
-          points={pts.join(' ')}
-          fill="none"
-          stroke={isUp ? '#00ff87' : '#ff4d6d'}
-          strokeWidth="2"
-        />
+        <polyline points={pts.join(' ')} fill="none" stroke={isUp ? '#00ff87' : '#ff4d6d'} strokeWidth="2" />
       </svg>
       <div className="flex justify-between text-xs text-edge-muted mt-1">
         <span>{formatFCFA(values[0])}</span>
@@ -58,14 +66,15 @@ function BankrollCurve({ history }) {
   );
 }
 
-function BetCard({ bet, sessionId, onResult }) {
+function ProposedBetCard({ bet, sessionId, onPlay, onSkip }) {
   const evColor = bet.ev > 0.1 ? 'text-edge-accent' : bet.ev > 0.05 ? 'text-edge-warning' : 'text-edge-muted';
   const confidenceBar = Math.round((bet.confidence || 0.5) * 100);
-  const resultDisplay = {
-    won: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-accent/20 text-edge-accent">✓ GAGNÉ</span>,
-    lost: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-danger/20 text-edge-danger">✗ PERDU</span>,
-    skipped: <span className="text-sm font-bold px-3 py-1 rounded bg-edge-border text-edge-muted">⏭ NON JOUÉ</span>,
+
+  const statusBadge = {
+    played: <span className="text-xs font-bold px-2 py-1 rounded bg-edge-warning/20 text-edge-warning">⏳ JOUÉ</span>,
+    not_played: <span className="text-xs font-bold px-2 py-1 rounded bg-edge-border text-edge-muted">⏭ PAS JOUÉ</span>,
   };
+
   return (
     <div className="rounded-lg border border-edge-border bg-edge-surface p-4 space-y-2">
       <div className="flex justify-between items-start">
@@ -95,13 +104,12 @@ function BetCard({ bet, sessionId, onResult }) {
           <p className="text-xs text-edge-muted">Mise Kelly</p>
           <p className="text-edge-accent font-bold">{formatFCFA(bet.stake_amount)} <span className="text-xs text-edge-muted">({bet.stake_pct}%)</span></p>
         </div>
-        {bet.result ? resultDisplay[bet.result] : (
+        {bet.status === 'proposed' ? (
           <div className="flex gap-1.5">
-            <button onClick={() => onResult(sessionId, bet.id, 'won')} className="text-xs px-2 py-1.5 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors">✅ GAGNÉ</button>
-            <button onClick={() => onResult(sessionId, bet.id, 'lost')} className="text-xs px-2 py-1.5 rounded border border-edge-danger text-edge-danger hover:bg-edge-danger/10 transition-colors">❌ PERDU</button>
-            <button onClick={() => onResult(sessionId, bet.id, 'skipped')} className="text-xs px-2 py-1.5 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">⏭</button>
+            <button onClick={() => onPlay(sessionId, bet.id)} className="text-xs px-3 py-1.5 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors font-semibold">JOUÉ</button>
+            <button onClick={() => onSkip(sessionId, bet.id)} className="text-xs px-3 py-1.5 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">PAS JOUÉ</button>
           </div>
-        )}
+        ) : statusBadge[bet.status]}
       </div>
       {bet.reasoning && (
         <p className="text-xs text-edge-muted border-t border-edge-border pt-2 leading-relaxed">{bet.reasoning}</p>
@@ -124,6 +132,10 @@ export default function BettingAgent() {
   const [currentSession, setCurrentSession] = useState(null);
   const [sessions, setSessions] = useState(getBettingSessions());
   const [bankrollHistory, setBankrollHistory] = useState(getBankrollHistory());
+  const [canAnalyze, setCanAnalyze] = useState(canAnalyzeToday());
+  const [countdown, setCountdown] = useState(getCountdownToMidnight());
+  const [showForceModal, setShowForceModal] = useState(false);
+  const [showRules, setShowRules] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
   useEffect(() => {
@@ -132,6 +144,19 @@ export default function BettingAgent() {
     const secTimer = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
     return () => { clearInterval(stepTimer); clearInterval(secTimer); };
   }, [loading]);
+
+  useEffect(() => {
+    if (canAnalyze) return;
+    const timer = setInterval(() => {
+      setCountdown(getCountdownToMidnight());
+      if (canAnalyzeToday()) { setCanAnalyze(true); clearInterval(timer); }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [canAnalyze]);
+
+  const drawdown = bankroll.initial > 0 ? (bankroll.initial - bankroll.current) / bankroll.initial : 0;
+  const isStopLoss = drawdown >= 0.3;
+  const isWarning = drawdown >= 0.15 && !isStopLoss;
 
   const toggleSport = (sport) => {
     setSelectedSports((prev) =>
@@ -151,7 +176,7 @@ export default function BettingAgent() {
     setEditingBankroll(false);
   };
 
-  const handleAnalyze = async () => {
+  const runAnalysis = async () => {
     setLoading(true);
     setError('');
     setCurrentSession(null);
@@ -244,8 +269,8 @@ export default function BettingAgent() {
         horizon,
         bankrollAtTime: bankroll.current,
         analysis: parsed.analysis,
-        bets: (parsed.bets || []).map((b) => ({ ...b, result: null })),
-        parlay: parsed.parlay,
+        bets: (parsed.bets || []).map((b, i) => ({ ...b, id: `${Date.now()}_${i}`, status: 'proposed' })),
+        parlay: parsed.parlay ? { ...parsed.parlay, status: 'proposed' } : null,
         weekly_target: parsed.weekly_target,
         risk_level: parsed.risk_level,
         warning: parsed.warning,
@@ -254,9 +279,10 @@ export default function BettingAgent() {
       setCurrentSession(session);
       saveBettingSession(session);
       setSessions(getBettingSessions());
+      setLastAnalysisDate();
+      setCanAnalyze(false);
     } catch (e) {
       clearTimeout(timeoutId);
-      console.error('ERREUR:', e.message);
       if (e.name === 'AbortError') {
         setError('Délai dépassé (3 min) - Réessaie avec moins de sports');
       } else {
@@ -267,54 +293,67 @@ export default function BettingAgent() {
     }
   };
 
-  const applyBankrollChange = (pnl) => {
-    const latest = getBettingBankroll();
-    const updated = { ...latest, current: Math.max(0, latest.current + pnl) };
-    saveBettingBankroll(updated);
-    setBankroll(updated);
-    appendBankrollPoint(updated.current);
-    setBankrollHistory(getBankrollHistory());
+  const handleAnalyze = () => {
+    if (isStopLoss) return;
+    if (!canAnalyze) { setShowForceModal(true); return; }
+    runAnalysis();
   };
 
-  const handleResult = (sessionId, betId, result) => {
-    const allSessions = getBettingSessions();
-    const target = allSessions.find((s) => s.id === sessionId);
-    if (!target) return;
-    const updatedBets = target.bets.map((b) => b.id === betId ? { ...b, result } : b);
-    const updatedSession = { ...target, bets: updatedBets };
-    saveBettingSession(updatedSession);
-    setSessions(getBettingSessions());
-    if (currentSession?.id === sessionId) setCurrentSession(updatedSession);
-
-    if (result !== 'skipped') {
-      const bet = updatedBets.find((b) => b.id === betId);
-      if (bet) {
-        const pnl = result === 'won' ? bet.stake_amount * (bet.odds - 1) : -bet.stake_amount;
-        applyBankrollChange(pnl);
-      }
-    }
+  const handlePlay = (sessionId, betId) => {
+    markBetAsPlayed(sessionId, betId);
+    const updated = getBettingSessions();
+    setSessions(updated);
+    if (currentSession?.id === sessionId) setCurrentSession(updated.find((s) => s.id === sessionId) || null);
   };
 
-  const handleParlayResult = (sessionId, result) => {
-    const allSessions = getBettingSessions();
-    const target = allSessions.find((s) => s.id === sessionId);
-    if (!target?.parlay) return;
-    const updatedSession = { ...target, parlay: { ...target.parlay, result } };
-    saveBettingSession(updatedSession);
-    setSessions(getBettingSessions());
-    if (currentSession?.id === sessionId) setCurrentSession(updatedSession);
+  const handleSkip = (sessionId, betId) => {
+    markBetAsNotPlayed(sessionId, betId);
+    const updated = getBettingSessions();
+    setSessions(updated);
+    if (currentSession?.id === sessionId) setCurrentSession(updated.find((s) => s.id === sessionId) || null);
+  };
 
-    if (result !== 'skipped') {
-      const { parlay } = target;
-      const pnl = result === 'won'
-        ? parlay.stake_amount * (parlay.combined_odds - 1)
-        : -parlay.stake_amount;
-      applyBankrollChange(pnl);
-    }
+  const handleParlayPlay = (sessionId) => {
+    markParlayAsPlayed(sessionId);
+    const updated = getBettingSessions();
+    setSessions(updated);
+    if (currentSession?.id === sessionId) setCurrentSession(updated.find((s) => s.id === sessionId) || null);
+  };
+
+  const handleParlaySkip = (sessionId) => {
+    markParlayAsNotPlayed(sessionId);
+    const updated = getBettingSessions();
+    setSessions(updated);
+    if (currentSession?.id === sessionId) setCurrentSession(updated.find((s) => s.id === sessionId) || null);
   };
 
   return (
     <div className="min-h-screen bg-edge-bg text-edge-text font-mono pb-24">
+      {/* Force override modal */}
+      {showForceModal && (
+        <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4">
+          <div className="bg-edge-surface border border-edge-warning/50 rounded-xl p-6 max-w-xs w-full space-y-4">
+            <p className="text-edge-warning font-bold text-sm uppercase tracking-wider">⚠ Analyse supplémentaire</p>
+            <p className="text-xs text-edge-muted leading-relaxed">Tu as déjà analysé aujourd'hui. La discipline est ta première protection. Forcer une seconde analyse risque de diluer la qualité de tes paris.</p>
+            <p className="text-xs text-edge-muted">Confirmer quand même ?</p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => { setShowForceModal(false); runAnalysis(); }}
+                className="flex-1 text-xs py-2.5 rounded border border-edge-warning text-edge-warning hover:bg-edge-warning/10 transition-colors font-bold"
+              >
+                FORCER
+              </button>
+              <button
+                onClick={() => setShowForceModal(false)}
+                className="flex-1 text-xs py-2.5 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors"
+              >
+                ANNULER
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="px-4 pt-12 pb-4 border-b border-edge-border">
         <h1 className="text-lg font-bold text-edge-accent">EDGE / PARIS</h1>
@@ -322,6 +361,21 @@ export default function BettingAgent() {
       </div>
 
       <div className="px-4 py-5 space-y-5">
+        {/* Stop-loss alert */}
+        {isStopLoss && (
+          <div className="rounded-lg border border-edge-danger bg-edge-danger/10 p-4">
+            <p className="text-sm font-bold text-edge-danger">🛑 STOP-LOSS ACTIVÉ</p>
+            <p className="text-xs text-edge-muted mt-1">Drawdown {Math.round(drawdown * 100)}% — règle 30% atteinte. Aucune analyse autorisée. Fais une pause et réévalue ta stratégie.</p>
+          </div>
+        )}
+
+        {isWarning && (
+          <div className="rounded-lg border border-edge-warning/50 bg-edge-warning/5 p-4">
+            <p className="text-sm font-bold text-edge-warning">⚠ ALERTE DRAWDOWN</p>
+            <p className="text-xs text-edge-muted mt-1">Drawdown {Math.round(drawdown * 100)}% — seuil 15% atteint. Réduis tes mises et sois sélectif.</p>
+          </div>
+        )}
+
         {/* Bankroll */}
         <div>
           {editingBankroll ? (
@@ -346,6 +400,43 @@ export default function BettingAgent() {
         </div>
 
         <BankrollCurve history={bankrollHistory} />
+
+        {/* Règles EDGE */}
+        <div className="rounded-lg border border-edge-border bg-edge-surface overflow-hidden">
+          <button
+            onClick={() => setShowRules((v) => !v)}
+            className="w-full flex justify-between items-center px-4 py-3 text-xs text-edge-muted"
+          >
+            <span className="uppercase tracking-widest text-edge-accent/80">Règles EDGE</span>
+            <span>{showRules ? '▲' : '▼'}</span>
+          </button>
+          {showRules && (
+            <div className="px-4 pb-4 space-y-1.5 text-xs text-edge-muted border-t border-edge-border pt-3">
+              <p>• 1 analyse par jour maximum</p>
+              <p>• Kelly 1/4, mise max 5% bankroll</p>
+              <p>• EV minimum requis : &gt;5%</p>
+              <p>• Stop-loss à -30% de drawdown</p>
+              <p>• Alerte discipline à -15%</p>
+              <p>• Marque JOUÉ avant le match, résultat dans Mes Paris</p>
+            </div>
+          )}
+        </div>
+
+        {/* Limite quotidienne */}
+        {!canAnalyze && !isStopLoss && (
+          <div className="rounded-lg border border-edge-border bg-edge-surface p-4 text-center">
+            <p className="text-xs text-edge-muted uppercase tracking-widest mb-1">Prochaine analyse dans</p>
+            <p className="text-2xl font-bold text-edge-accent tabular-nums">{countdown}</p>
+            <p className="text-xs text-edge-muted mt-1">Analyse du jour effectuée</p>
+          </div>
+        )}
+
+        {/* Clarification simples vs combiné */}
+        <div className="rounded-lg border border-edge-border/50 bg-edge-surface/50 p-3">
+          <p className="text-xs text-edge-muted leading-relaxed">
+            <span className="text-edge-text font-semibold">Simples vs Combiné :</span> Les paris simples maximisent la constance. Le combiné (si proposé) est optionnel — mise plus petite, gain plus fort, risque plus élevé. Marque-les JOUÉ indépendamment.
+          </p>
+        </div>
 
         {/* Sélection sports */}
         <div>
@@ -399,7 +490,7 @@ export default function BettingAgent() {
         {/* Bouton analyse */}
         <button
           onClick={handleAnalyze}
-          disabled={loading || selectedSports.length === 0}
+          disabled={loading || selectedSports.length === 0 || isStopLoss}
           className="w-full py-3.5 rounded-lg font-bold text-sm tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-edge-accent text-edge-bg hover:bg-edge-accent-dim active:scale-95"
         >
           {loading ? (
@@ -410,7 +501,7 @@ export default function BettingAgent() {
               </span>
               <span className="text-xs font-normal opacity-70">{elapsedSeconds}s écoulées...</span>
             </span>
-          ) : '▶ LANCER L\'ANALYSE'}
+          ) : canAnalyze ? '▶ LANCER L\'ANALYSE' : '↺ NOUVELLE ANALYSE (déjà fait aujourd\'hui)'}
         </button>
 
         {/* Erreur */}
@@ -419,45 +510,6 @@ export default function BettingAgent() {
             <p className="text-xs text-edge-danger">{error}</p>
           </div>
         )}
-
-        {/* MES PARIS EN COURS — toutes sessions confondues */}
-        {(() => {
-          const pendingBets = sessions.flatMap((s) =>
-            (s.bets || []).filter((b) => b.result === null).map((b) => ({ ...b, sessionId: s.id }))
-          );
-          const pendingParlays = sessions.filter(
-            (s) => s.parlay?.active && !s.parlay?.result
-          );
-          if (pendingBets.length === 0 && pendingParlays.length === 0) return null;
-          return (
-            <div className="space-y-3">
-              <p className="text-xs text-edge-muted uppercase tracking-widest">
-                Mes Paris en cours ({pendingBets.length})
-              </p>
-              {pendingBets.map((bet) => (
-                <BetCard key={bet.id} bet={bet} sessionId={bet.sessionId} onResult={handleResult} />
-              ))}
-              {pendingParlays.map((s) => (
-                <div key={s.id} className="rounded-lg border border-edge-warning/30 bg-edge-warning/5 p-4">
-                  <p className="text-xs text-edge-warning uppercase tracking-widest mb-2">Combiné en cours</p>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="text-edge-muted">Cote combinée</span>
-                    <span className="text-edge-text font-bold">@{s.parlay.combined_odds}</span>
-                  </div>
-                  <div className="flex justify-between text-sm mb-3">
-                    <span className="text-edge-muted">Mise · Gain potentiel</span>
-                    <span className="text-edge-accent">{formatFCFA(s.parlay.stake_amount)} · {formatFCFA(s.parlay.potential_return)}</span>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleParlayResult(s.id, 'won')} className="flex-1 text-xs py-2 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors">✅ GAGNÉ</button>
-                    <button onClick={() => handleParlayResult(s.id, 'lost')} className="flex-1 text-xs py-2 rounded border border-edge-danger text-edge-danger hover:bg-edge-danger/10 transition-colors">❌ PERDU</button>
-                    <button onClick={() => handleParlayResult(s.id, 'skipped')} className="text-xs px-3 py-2 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">⏭</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          );
-        })()}
 
         {/* Résultats session courante */}
         {currentSession && (
@@ -475,10 +527,50 @@ export default function BettingAgent() {
                 </div>
               </div>
             )}
+
+            <p className="text-xs text-edge-muted uppercase tracking-widest">
+              Paris proposés — marque JOUÉ avant le match
+            </p>
+            {currentSession.bets?.map((bet) => (
+              <ProposedBetCard
+                key={bet.id}
+                bet={bet}
+                sessionId={currentSession.id}
+                onPlay={handlePlay}
+                onSkip={handleSkip}
+              />
+            ))}
+
+            {currentSession.parlay?.active && (
+              <div className="rounded-lg border border-edge-warning/30 bg-edge-warning/5 p-4">
+                <p className="text-xs text-edge-warning uppercase tracking-widest mb-2">Combiné optionnel</p>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-edge-muted">Cote combinée</span>
+                  <span className="text-edge-text font-bold">@{currentSession.parlay.combined_odds}</span>
+                </div>
+                <div className="flex justify-between text-sm mb-1">
+                  <span className="text-edge-muted">Mise · Gain potentiel</span>
+                  <span className="text-edge-accent">{formatFCFA(currentSession.parlay.stake_amount)} · {formatFCFA(currentSession.parlay.potential_return)}</span>
+                </div>
+                {currentSession.parlay.reasoning && (
+                  <p className="text-xs text-edge-muted mb-3 leading-relaxed">{currentSession.parlay.reasoning}</p>
+                )}
+                {currentSession.parlay.status === 'proposed' ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => handleParlayPlay(currentSession.id)} className="flex-1 text-xs py-2 rounded border border-edge-accent text-edge-accent hover:bg-edge-accent/10 transition-colors font-semibold">JOUÉ</button>
+                    <button onClick={() => handleParlaySkip(currentSession.id)} className="text-xs px-4 py-2 rounded border border-edge-border text-edge-muted hover:bg-edge-border/20 transition-colors">PAS JOUÉ</button>
+                  </div>
+                ) : (
+                  <span className="text-xs font-bold px-2 py-1 rounded bg-edge-warning/20 text-edge-warning">
+                    {currentSession.parlay.status === 'played' ? '⏳ JOUÉ' : '⏭ PAS JOUÉ'}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         )}
 
-        {/* Historique */}
+        {/* Historique sessions */}
         {sessions.length > 0 && (
           <div>
             <button
@@ -490,19 +582,25 @@ export default function BettingAgent() {
             </button>
             {showHistory && (
               <div className="space-y-3 mt-2">
-                {sessions.map((s) => (
-                  <div key={s.id} className="rounded-lg border border-edge-border bg-edge-surface p-3">
-                    <div className="flex justify-between text-xs text-edge-muted mb-2">
-                      <span>{new Date(s.createdAt).toLocaleDateString('fr-FR')}</span>
-                      <span>{s.sports?.join(', ')}</span>
+                {sessions.map((s) => {
+                  const played = (s.bets || []).filter((b) => b.status === 'played' || b.status === 'won' || b.status === 'lost').length;
+                  const won = (s.bets || []).filter((b) => b.status === 'won').length;
+                  const lost = (s.bets || []).filter((b) => b.status === 'lost').length;
+                  return (
+                    <div key={s.id} className="rounded-lg border border-edge-border bg-edge-surface p-3">
+                      <div className="flex justify-between text-xs text-edge-muted mb-2">
+                        <span>{new Date(s.createdAt).toLocaleDateString('fr-FR')}</span>
+                        <span>{s.sports?.join(', ')}</span>
+                      </div>
+                      <div className="flex gap-4 text-xs">
+                        <span className="text-edge-text">{s.bets?.length || 0} proposés</span>
+                        <span className="text-edge-warning">{played} joués</span>
+                        <span className="text-edge-accent">{won} gagnés</span>
+                        <span className="text-edge-danger">{lost} perdus</span>
+                      </div>
                     </div>
-                    <div className="flex gap-4 text-xs">
-                      <span className="text-edge-text">{s.bets?.length || 0} paris</span>
-                      <span className="text-edge-accent">{s.bets?.filter((b) => b.result === 'won').length || 0} gagnés</span>
-                      <span className="text-edge-danger">{s.bets?.filter((b) => b.result === 'lost').length || 0} perdus</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

@@ -3,6 +3,7 @@ import BottomNav from './components/BottomNav'
 import Dashboard from './pages/Dashboard'
 import BettingAgent from './pages/BettingAgent'
 import BRVMAgent from './pages/BRVMAgent'
+import MyBets from './pages/MyBets'
 
 export default function App() {
   return (
@@ -11,6 +12,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/betting" element={<BettingAgent />} />
+          <Route path="/mybets" element={<MyBets />} />
           <Route path="/brvm" element={<BRVMAgent />} />
         </Routes>
         <BottomNav />
