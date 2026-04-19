@@ -1,7 +1,15 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { getBRVMSessions, saveBRVMSession, saveBRVMPortfolio, getBRVMPortfolio, getBettingBankroll, saveBettingBankroll, appendBankrollPoint, addBRVMConfirmedAmount } from '../utils/storage';
 import { formatFCFA } from '../utils/kelly';
 
+
+const BRVM_STEPS = [
+  '🔍 Recherche des cours BRVM actuels...',
+  '📊 Analyse des actions en cours...',
+  '🧮 Construction du portefeuille...',
+  '⚡ Optimisation de la diversification...',
+  '✅ Finalisation...',
+];
 
 const RISK_COLORS = {
   'Faible': 'text-edge-accent',
@@ -16,12 +24,21 @@ const RISK_COLORS = {
 export default function BRVMAgent() {
   const [amount, setAmount] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState('');
   const [result, setResult] = useState(null);
   const [sessions, setSessions] = useState(getBRVMSessions());
   const [showHistory, setShowHistory] = useState(false);
   const [currentPortfolio] = useState(getBRVMPortfolio());
   const [stockConfirmations, setStockConfirmations] = useState({});
+
+  useEffect(() => {
+    if (!loading) { setLoadingStep(0); setElapsedSeconds(0); return; }
+    const stepTimer = setInterval(() => setLoadingStep((s) => Math.min(s + 1, BRVM_STEPS.length - 1)), 15000);
+    const secTimer = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+    return () => { clearInterval(stepTimer); clearInterval(secTimer); };
+  }, [loading]);
 
   const confirmStock = (ticker, amount) => {
     setStockConfirmations((prev) => ({ ...prev, [ticker]: 'bought' }));
@@ -47,16 +64,27 @@ export default function BRVMAgent() {
     setError('');
     setResult(null);
 
-    const userPrompt = `Montant à investir: ${amountNum} FCFA. Utilise ta connaissance des actions BRVM cotées (SIB, SONATEL, ORANGE CI, ECOBANK, SGCI, UNIWAX, NESTLE CI, SOLIBRA, SAFCA, PALM CI) avec des prix approximatifs réalistes et propose un portefeuille de 3 à 5 actions.`;
+    const userPrompt = `Montant à investir: ${amountNum} FCFA. Date: ${new Date().toLocaleDateString('fr-FR')}. Recherche les cours actuels des actions BRVM et propose un portefeuille de 3 à 5 actions diversifié.`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
         body: JSON.stringify({
-          systemPrompt: "Tu es un conseiller BRVM expert. Utilise web_search pour trouver les cours RÉELS actuels des actions BRVM aujourd'hui. Ne donne que des prix réels vérifiés. Devise: FCFA. Explique simplement pour débutant. Diversifie sur au moins 3 secteurs. Garde 10% en cash.",
-          userPrompt,
+          model: 'claude-sonnet-4-6',
+          max_tokens: 3000,
+          system: `Tu es conseiller BRVM expert. Devise: FCFA.\nDate: ${new Date().toLocaleDateString('fr-FR')}.\n\nPROCÉDURE OBLIGATOIRE :\n1. Utilise web_search pour trouver les cours ACTUELS BRVM\n2. Recherche les actions SIB, SONATEL, ORANGE CI, ECOBANK, etc\n3. Ne propose QUE des actions avec prix réels vérifiés\n4. Portefeuille diversifié débutant, cash 10%\n\nAprès recherche web, appelle propose_portfolio.`,
           tools: [
+            { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
             {
               name: 'propose_portfolio',
               description: 'Propose un portefeuille BRVM débutant',
@@ -93,12 +121,18 @@ export default function BRVMAgent() {
               },
             },
           ],
-          toolName: 'propose_portfolio',
+          tool_choice: { type: 'auto' },
+          messages: [{ role: 'user', content: userPrompt }],
         }),
       });
 
-      const parsed = await res.json();
-      if (!res.ok) throw new Error(parsed.error || 'Erreur serveur');
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Erreur API');
+
+      const toolUse = data.content.find((b) => b.type === 'tool_use' && b.name === 'propose_portfolio');
+      if (!toolUse) throw new Error('Pas de résultat structuré');
+      const parsed = toolUse.input;
       console.log('PARSED:', JSON.stringify(parsed));
 
       setResult(parsed);
@@ -116,8 +150,13 @@ export default function BRVMAgent() {
       saveBRVMSession(session);
       setSessions(getBRVMSessions());
     } catch (e) {
+      clearTimeout(timeoutId);
       console.error('ERREUR:', e.message);
-      setError(e.message);
+      if (e.name === 'AbortError') {
+        setError('Délai dépassé (3 min) - Réessaie');
+      } else {
+        setError(e.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -173,8 +212,12 @@ export default function BRVMAgent() {
           className="w-full py-3.5 rounded-lg font-bold text-sm tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-edge-accent text-edge-bg hover:bg-edge-accent-dim active:scale-95"
         >
           {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="animate-spin">⟳</span> ANALYSE DU MARCHÉ BRVM...
+            <span className="flex flex-col items-center gap-1">
+              <span className="flex items-center gap-2">
+                <span className="animate-spin">⟳</span>
+                {BRVM_STEPS[loadingStep]}
+              </span>
+              <span className="text-xs font-normal opacity-70">{elapsedSeconds}s écoulées...</span>
             </span>
           ) : '▶ OBTENIR MON PORTEFEUILLE'}
         </button>

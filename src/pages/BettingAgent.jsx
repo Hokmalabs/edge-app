@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   getBettingBankroll, saveBettingBankroll,
   getBettingSessions, saveBettingSession,
@@ -8,6 +8,14 @@ import { formatFCFA } from '../utils/kelly';
 import BankrollCard from '../components/BankrollCard';
 
 const SPORTS = ['Football', 'Basketball/NBA', 'NFL', 'Tennis'];
+
+const BETTING_STEPS = [
+  '🔍 Recherche des matchs du jour...',
+  '📊 Analyse des cotes en cours...',
+  '🧮 Calcul des probabilités et Kelly...',
+  '⚡ Sélection des meilleurs paris...',
+  '✅ Finalisation...',
+];
 const HORIZONS = ["Aujourd'hui", 'Cette semaine'];
 
 
@@ -110,11 +118,20 @@ export default function BettingAgent() {
   const [horizon, setHorizon] = useState(HORIZONS[0]);
   const [context, setContext] = useState('');
   const [loading, setLoading] = useState(false);
+  const [loadingStep, setLoadingStep] = useState(0);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [error, setError] = useState('');
   const [currentSession, setCurrentSession] = useState(null);
   const [sessions, setSessions] = useState(getBettingSessions());
   const [bankrollHistory, setBankrollHistory] = useState(getBankrollHistory());
   const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    if (!loading) { setLoadingStep(0); setElapsedSeconds(0); return; }
+    const stepTimer = setInterval(() => setLoadingStep((s) => Math.min(s + 1, BETTING_STEPS.length - 1)), 15000);
+    const secTimer = setInterval(() => setElapsedSeconds((s) => s + 1), 1000);
+    return () => { clearInterval(stepTimer); clearInterval(secTimer); };
+  }, [loading]);
 
   const toggleSport = (sport) => {
     setSelectedSports((prev) =>
@@ -139,19 +156,30 @@ export default function BettingAgent() {
     setError('');
     setCurrentSession(null);
 
-    const userPrompt = `Bankroll: ${bankroll.current} FCFA. Sports: ${selectedSports.join(', ')}. Horizon: ${horizon}.${context ? ` ${context}` : ''} Nous sommes le ${new Date().toLocaleDateString('fr-FR')}. Utilise web_search pour trouver les vrais matchs du jour avec leurs vraies cotes.`;
+    const userPrompt = `Bankroll: ${bankroll.current} FCFA. Sports: ${selectedSports.join(', ')}. Horizon: ${horizon}.${context ? ` ${context}` : ''} Nous sommes le ${new Date().toLocaleDateString('fr-FR')}. Recherche les vrais matchs du jour avec leurs vraies cotes.`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 180000);
 
     try {
-      const res = await fetch('/api/analyze', {
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': import.meta.env.VITE_ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
         body: JSON.stringify({
-          systemPrompt: "Tu es EDGE, agent de paris sportifs expert. Devise: FCFA. Utilise web_search pour trouver les VRAIS matchs du jour avec leurs vraies cotes. Ne propose QUE des matchs réels vérifiés. Kelly 1/4. Mise max 5% bankroll. EV > 5% requis. Inclus l'heure de début de chaque match.",
-          userPrompt,
+          model: 'claude-sonnet-4-6',
+          max_tokens: 3000,
+          system: `Tu es EDGE, agent de paris sportifs expert quantitatif.\nDevise: FCFA. Date du jour: ${new Date().toLocaleDateString('fr-FR')}.\n\nPROCÉDURE OBLIGATOIRE :\n1. Utilise web_search pour trouver les matchs RÉELS du jour/semaine\n2. Recherche les cotes 1xbet ou bookmakers africains si possible\n3. Ne propose QUE des matchs confirmés avec date/heure réelle\n4. Kelly fractionné 1/4, mise max 5% bankroll, EV > 5% requis\n\nAprès recherche web, appelle propose_bets avec les résultats.`,
           tools: [
+            { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
             {
               name: 'propose_bets',
-              description: 'Propose des paris sur des matchs réels du jour',
+              description: 'Propose des paris sur matchs réels vérifiés',
               input_schema: {
                 type: 'object',
                 properties: {
@@ -196,13 +224,18 @@ export default function BettingAgent() {
               },
             },
           ],
-          toolName: 'propose_bets',
+          tool_choice: { type: 'auto' },
+          messages: [{ role: 'user', content: userPrompt }],
         }),
       });
 
-      const parsed = await res.json();
-      if (!res.ok) throw new Error(parsed.error || 'Erreur serveur');
-      console.log('PARSED:', JSON.stringify(parsed));
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error?.message || 'Erreur API');
+
+      const toolUse = data.content.find((b) => b.type === 'tool_use' && b.name === 'propose_bets');
+      if (!toolUse) throw new Error('Pas de résultat structuré');
+      const parsed = toolUse.input;
 
       const session = {
         id: Date.now().toString(),
@@ -222,8 +255,13 @@ export default function BettingAgent() {
       saveBettingSession(session);
       setSessions(getBettingSessions());
     } catch (e) {
+      clearTimeout(timeoutId);
       console.error('ERREUR:', e.message);
-      setError(e.message);
+      if (e.name === 'AbortError') {
+        setError('Délai dépassé (3 min) - Réessaie avec moins de sports');
+      } else {
+        setError(e.message);
+      }
     } finally {
       setLoading(false);
     }
@@ -365,8 +403,12 @@ export default function BettingAgent() {
           className="w-full py-3.5 rounded-lg font-bold text-sm tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed bg-edge-accent text-edge-bg hover:bg-edge-accent-dim active:scale-95"
         >
           {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="animate-spin">⟳</span> ANALYSE EN COURS...
+            <span className="flex flex-col items-center gap-1">
+              <span className="flex items-center gap-2">
+                <span className="animate-spin">⟳</span>
+                {BETTING_STEPS[loadingStep]}
+              </span>
+              <span className="text-xs font-normal opacity-70">{elapsedSeconds}s écoulées...</span>
             </span>
           ) : '▶ LANCER L\'ANALYSE'}
         </button>
