@@ -81,6 +81,130 @@ export function addBRVMConfirmedAmount(amount) {
   save(KEYS.BRVM_CONFIRMED_AMOUNT, getBRVMConfirmedAmount() + amount);
 }
 
+// --- Limite analyse par jour ---
+const todayStr = () => new Date().toISOString().split('T')[0];
+
+export function getLastAnalysisDate() {
+  return load('edge_last_analysis_date', null);
+}
+
+export function setLastAnalysisDate() {
+  save('edge_last_analysis_date', todayStr());
+}
+
+export function canAnalyzeToday() {
+  return getLastAnalysisDate() !== todayStr();
+}
+
+// --- Gestion statut paris ---
+function updateBetField(sessionId, betId, updates) {
+  const sessions = getBettingSessions();
+  const si = sessions.findIndex((s) => s.id === sessionId);
+  if (si === -1) return;
+  const bi = sessions[si].bets?.findIndex((b) => b.id === betId) ?? -1;
+  if (bi !== -1) sessions[si].bets[bi] = { ...sessions[si].bets[bi], ...updates };
+  save(KEYS.BETTING_SESSIONS, sessions);
+}
+
+export function markBetAsPlayed(sessionId, betId) {
+  updateBetField(sessionId, betId, { status: 'played', played_at: new Date().toISOString() });
+}
+
+export function markBetAsNotPlayed(sessionId, betId) {
+  updateBetField(sessionId, betId, { status: 'not_played', result: 'skipped' });
+}
+
+export function resolveBet(sessionId, betId, won) {
+  const sessions = getBettingSessions();
+  const bet = sessions.find((s) => s.id === sessionId)?.bets?.find((b) => b.id === betId);
+  if (!bet) return 0;
+  const pnl = won ? bet.stake_amount * (bet.odds - 1) : -bet.stake_amount;
+  updateBetField(sessionId, betId, {
+    status: won ? 'won' : 'lost',
+    result: won ? 'won' : 'lost',
+    resolved_at: new Date().toISOString(),
+    result_amount: pnl,
+  });
+  const br = getBettingBankroll();
+  const updated = { ...br, current: Math.max(0, br.current + pnl) };
+  saveBettingBankroll(updated);
+  appendBankrollPoint(updated.current);
+  return pnl;
+}
+
+export function markParlayAsPlayed(sessionId) {
+  const sessions = getBettingSessions();
+  const si = sessions.findIndex((s) => s.id === sessionId);
+  if (si === -1) return;
+  sessions[si].parlay = { ...sessions[si].parlay, status: 'played', played_at: new Date().toISOString() };
+  save(KEYS.BETTING_SESSIONS, sessions);
+}
+
+export function markParlayAsNotPlayed(sessionId) {
+  const sessions = getBettingSessions();
+  const si = sessions.findIndex((s) => s.id === sessionId);
+  if (si === -1) return;
+  sessions[si].parlay = { ...sessions[si].parlay, status: 'not_played' };
+  save(KEYS.BETTING_SESSIONS, sessions);
+}
+
+export function resolveParlayBet(sessionId, won) {
+  const sessions = getBettingSessions();
+  const si = sessions.findIndex((s) => s.id === sessionId);
+  const parlay = sessions[si]?.parlay;
+  if (!parlay) return 0;
+  const pnl = won ? parlay.stake_amount * (parlay.combined_odds - 1) : -parlay.stake_amount;
+  sessions[si].parlay = {
+    ...parlay,
+    status: won ? 'won' : 'lost',
+    result: won ? 'won' : 'lost',
+    resolved_at: new Date().toISOString(),
+    result_amount: pnl,
+  };
+  save(KEYS.BETTING_SESSIONS, sessions);
+  const br = getBettingBankroll();
+  const updated = { ...br, current: Math.max(0, br.current + pnl) };
+  saveBettingBankroll(updated);
+  appendBankrollPoint(updated.current);
+  return pnl;
+}
+
+export function getPendingBets() {
+  return getBettingSessions().flatMap((s) => {
+    const singles = (s.bets || [])
+      .filter((b) => b.status === 'played')
+      .map((b) => ({ ...b, sessionId: s.id, sessionDate: s.createdAt, type: 'single' }));
+    const parlays = s.parlay?.active && s.parlay?.status === 'played'
+      ? [{ ...s.parlay, id: `${s.id}_parlay`, sessionId: s.id, sessionDate: s.createdAt, type: 'parlay' }]
+      : [];
+    return [...singles, ...parlays];
+  });
+}
+
+export function getBetHistory() {
+  return getBettingSessions().flatMap((s) => {
+    const singles = (s.bets || [])
+      .filter((b) => ['won', 'lost'].includes(b.status) || ['won', 'lost'].includes(b.result))
+      .map((b) => ({ ...b, status: b.status || b.result, sessionId: s.id, sessionDate: s.createdAt, type: 'single' }));
+    const parlays = s.parlay?.active && ['won', 'lost'].includes(s.parlay?.status)
+      ? [{ ...s.parlay, id: `${s.id}_parlay`, sessionId: s.id, sessionDate: s.createdAt, type: 'parlay', status: s.parlay.status }]
+      : [];
+    return [...singles, ...parlays].sort((a, b) => new Date(b.resolved_at || b.sessionDate) - new Date(a.resolved_at || a.sessionDate));
+  });
+}
+
+export function getNotPlayedBets() {
+  return getBettingSessions().flatMap((s) => {
+    const singles = (s.bets || [])
+      .filter((b) => b.status === 'not_played' || b.result === 'skipped')
+      .map((b) => ({ ...b, sessionId: s.id, sessionDate: s.createdAt, type: 'single' }));
+    const parlays = s.parlay?.active && s.parlay?.status === 'not_played'
+      ? [{ ...s.parlay, id: `${s.id}_parlay`, sessionId: s.id, sessionDate: s.createdAt, type: 'parlay' }]
+      : [];
+    return [...singles, ...parlays];
+  });
+}
+
 // --- Sessions BRVM ---
 export function getBRVMSessions() {
   return load(KEYS.BRVM_SESSIONS, []);
